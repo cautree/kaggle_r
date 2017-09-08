@@ -1,0 +1,195 @@
+---
+title: "Identifying Key Cancer Predictors with Boruta"
+---
+
+## Introduction
+
+Cervical cancer is among the 5 most common types of cancer in women worldwide.
+Using this new dataset, I'll attempt to explore the phenomena and also identify the key predictors of cervical cancer using boruta feature selection.
+
+*Disclaimer*: Many things about this dataset are unknown to the present date, including some variable meanings and the target variable itself. With that in mind, much of this report is based on inference.
+```{r}
+install.packages("Boruta")
+```
+
+
+## Data Preparation
+```{r libraries, message=FALSE,warning=FALSE}
+# [1] Load libraries, data and surface analysis
+library(ggplot2)        #Data Visualization
+library(dplyr)          #Data Manipulation
+library(Boruta)         #Feature Importance Analysis
+
+```
+
+We'll start off by loading the libraries and reading the data, after that, we'll take a glimpse of the dataset and it's structure.
+
+```{r macroanalysis}
+raw.data = read.csv("kag_risk_factors_cervical_cancer.csv")
+dim(raw.data)
+glimpse(raw.data)
+```
+
+It becomes clear that many variables were interpreted as factors, this is caused by the "?" inserted as placeholders for missing values, as exemplified by:
+
+```{r}
+unique(raw.data$STDs..Time.since.first.diagnosis)
+```
+
+Before delving any further in the dataset, I chose to check the integrity of the data, since it can mask the actual summary statistics that we are looking for.
+
+Missing values can come in many flavors  such as NAs, zeroes, negative vales or blank strings, so let us create a function and a plot to visualize the completude (non missingness) of the data.
+
+```{r}
+# [2] Verify Dataset Integrity - NAs
+prop_NA <- function(x) { mean(is.na(x))}
+missdata <- sapply(raw.data, prop_NA)
+missdata <- data.frame(Variables = names(missdata), Proportion = missdata, Completude = 1 - missdata)
+missdata <- missdata[order(desc(missdata$Proportion)),]
+```
+
+```{r ,fig.align='center',echo=FALSE}
+#[3] Data Visualization: Completude vs NAs
+ggplot(missdata, aes(x = Variables, y = Completude))+
+geom_bar(stat = "identity", fill = "lawngreen")+
+theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+labs(title = "Porportion of non NA Values")+
+theme(plot.title = element_text(hjust = 0.5))
+
+#[4] Verify Dataset Integrity - Blanks and Zeroes
+prop_NullZero <- function(x) { mean(x == "" | x == 0)}
+nullzerodata <- sapply(raw.data, prop_NullZero)
+nullzerodata <- data.frame(Variables = names(nullzerodata), Proportion = nullzerodata, Completude = 1 - nullzerodata)
+nullzerodata <- nullzerodata[order(desc(nullzerodata$Completude)),]
+
+
+#[5] Data Visualization: Completude vs blanks and zeroes 
+ggplot(nullzerodata, aes(x = Variables, y = Completude))+
+geom_bar(stat = "identity", fill = "deepskyblue2")+
+theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+labs(title = "Proportion of non Zero or Blank Values")+
+theme(plot.title = element_text(hjust = 0.5))
+```
+
+From the plots we can conclude that the exclamation marks are our only worry before proceeding.
+
+## Data Manipulation
+
+Now that we know our data a little better, let's take care of the missing values to enable a closer exploratory data analysis.
+
+```{r}
+# [6] Create function to identify all columns that need repair
+find_cols = function(x){
+  cols = vector()
+  for (i in 1:ncol(x)){
+   if (sum(x[,i] == "?") > 0){
+    cols = c(cols,i)
+   }  
+  }
+  return(cols)
+}
+
+
+# [7] Create function to fix missing values
+fix_columns = function(x,cols) {
+  for (j in 1:length(cols)) {
+    x[,cols[j]] = as.character(x[,cols[j]])
+    x[which(x[,cols[j]] == "?"),cols[j]] = "-1.0"
+    x[,cols[j]] = as.numeric(x[,cols[j]])
+  }
+  return(x)
+}
+
+# [8] Apply functions
+cols_to_fix = find_cols(raw.data)
+raw.data = fix_columns(raw.data,cols_to_fix)
+```
+
+With the values taken care of, we need to establish an attribute that represents the cervical cancer.
+
+```{r}
+# [9] Create target variable
+raw.data$CervicalCancer = raw.data$Hinselmann + raw.data$Schiller + raw.data$Citology + raw.data$Biopsy
+raw.data$CervicalCancer = factor(raw.data$CervicalCancer, levels=c("0","1","2","3","4"))
+```
+
+The last four columns ("Hinselmann","Schiller","Citology","Biopsy") represent the results of cervical cancer exams.
+
+Positive exams results doesn't necessarily imply in a diagnostic, but as multiple exams return positive, the greater the likelyhood of cervical cancer.
+
+To represent that, I created a variable called `CervicalCancer` that is composed of:
+
+$CervicalCancer = Hinselmann + Schiller + Citology + Biopsy$
+
+## Exploratory Data Analysis
+
+Let's explore our target variable and some of the other variables in our dataset:
+
+```{r}
+# [10] Explore target variable distribution
+round(prop.table(table(raw.data$CervicalCancer)),2)
+```
+
+```{r, fig.align='center',echo=FALSE}
+# [11] Plot target variable distribution
+ggplot(raw.data,(aes(x = CervicalCancer, y = sum(as.integer(as.character(CervicalCancer))),fill = CervicalCancer)))+
+  geom_bar(stat="identity")+
+  scale_fill_manual(values=c("limegreen","gold","orangered","red2","purple"))+
+  labs(title = "Quantity of CervicalCancer Classes")+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+The accuracy of a baseline model, predicting everybody will not have cancer would have an accuracy of **88%**.
+
+```{r, fig.align='center',echo=FALSE}
+# [12] Density: CervicalCancer across Age
+ggplot(raw.data, aes(x = Age, fill=CervicalCancer))+
+  geom_density(alpha = 0.40, color=NA)+
+  scale_fill_manual(values=c("limegreen","gold","orangered","red2","purple"))+
+  labs(title = "Density of CervicalCancer across Age")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  facet_grid(as.factor(CervicalCancer) ~ .)
+```
+
+As we move from 0 to 4, we can see a deslocation of the peak in every density plot, which indicates a correlation between `Age` and `CervicalCancer`.
+
+```{r, fig.align='center',echo=FALSE}
+# [13] Density: CervicalCancer across Age
+ggplot(raw.data, aes(x = Hormonal.Contraceptives..years., fill=CervicalCancer))+
+  geom_density(alpha = 0.40, color=NA)+
+  scale_fill_manual(values=c("limegreen","gold","orangered","red2","purple"))+
+  labs(title = "Density of CervicalCancer across Years of Hormonal Contraceptives")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  facet_grid(as.factor(CervicalCancer) ~ .)
+```
+
+The decreasing height of the peaks and the streching of the right tail of the density plot could suggest that these variables are correlated.
+
+While we could do this for every variable, a feature selection algorithm can give us objective metrics for features that most influence `CervicalCancer`. For this problem, we'll use the Boruta Feature Selection.
+
+## Feature Importance Analysis with Boruta
+
+In a nutshell, Boruta will create many iterations of random forests using the `ranger` package and will store the feature importance. After that it will classify each feature as important or not for the signal we are looking for.
+
+For more information on this algorithm, I suggest starting with the following article: <https://www.r-bloggers.com/feature-selection-all-relevant-selection-with-the-boruta-package/>
+
+```{r}
+# [14] Create copy of the original dataset, Remove medical results columns
+train = raw.data
+train[,c("Hinselmann","Schiller","Citology","Biopsy")] = NULL
+
+# [15] Perform Boruta Analysis on the training set
+set.seed(1407)
+boruta_analysis = Boruta(CervicalCancer ~ ., data=train, maxRuns=200)
+```
+
+```{r, fig.align='center',echo=FALSE}
+# [16] Plot boruta results
+plot(boruta_analysis,las=2,main="Boruta Analysis: Variable Importance")
+```
+
+```{r}
+as.data.frame(boruta_analysis$finalDecision)
+```
+
+Cervical cancer is such an importante topic, the **fourth** most common in women with over **500.000** diagnoses every year. I sincerely hope this kernel shed some light about it.
